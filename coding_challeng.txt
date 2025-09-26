@@ -1,0 +1,25 @@
+Coding Challenge
+This challenge is a prerequisite to interviewing with AppRabbit. We want to see what you
+can do in the context of a real project. This isn’t something that should take a lot of your
+time. We know you’re busy and we don’t want to add a lot to your plate.
+We would like to see this completed within 2 days. Earlier is better! It’s a chance to
+demonstrate that you can learn and build quickly.
+The coding challenge is a single-page image search app built in Flutter. Here are the
+requirements:
+• The page should have a search bar at the top and a list of results below.
+• Images can be sourced from any API of your choosing.
+• Implement infinite scroll, meaning more results should continue to load as you
+scroll
+• Implement debounce in the search field
+• That’s all. You can add more features if you want.
+• Send me a link to the code in a public repo on GitHub.
+Notes:
+• Use your resources. AI and third-party packages are not oN limits.
+• You will need to be able to speak about your code and understand what it’s doing.
+• Your work will be evaluated on functionality, code quality, thoughtfulness, design
+taste, and speed.
+• Being able to comment on some things you learned about Flutter in the process will
+also be a plus.
+This is step one of a two-step process. Once we get this back from you, we’ll have one short
+call or meeting to walk through your code, and either hire you or not.
+Good luck!
