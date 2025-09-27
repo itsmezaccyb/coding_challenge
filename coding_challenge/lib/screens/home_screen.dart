@@ -1,8 +1,9 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import '../models/team_model.dart';
-import '../widgets/team_card.dart';
-import 'team_detail_screen.dart';
+import '../models/pokemon_model.dart';
+import '../services/pokemon_service.dart';
+import '../widgets/pokemon_card.dart';
+import 'pokemon_detail_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -15,13 +16,28 @@ class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   Timer? _debounceTimer;
+  Timer? _scrollThrottleTimer;
   
-  List<Team> _allTeams = [];
-  List<Team> _filteredTeams = [];
+  List<Pokemon> _allPokemon = [];
+  List<Pokemon> _filteredPokemon = [];
   bool _isLoading = false;
   bool _hasMore = true;
-  int _currentPage = 1;
-  final int _itemsPerPage = 10;
+  int _currentOffset = 0;
+  final int _itemsPerPage = 5;
+  bool _isSearching = false;
+  
+  // Memory management: keep only last 200 Pokemon in memory
+  static const int _maxPokemonInMemory = 200;
+  
+  // Memory management: trim list if it gets too large
+  void _manageMemory() {
+    if (_allPokemon.length > _maxPokemonInMemory) {
+      // Keep only the most recent Pokemon
+      final startIndex = _allPokemon.length - _maxPokemonInMemory;
+      _allPokemon = _allPokemon.sublist(startIndex);
+      _filteredPokemon = List.from(_allPokemon);
+    }
+  }
 
   @override
   void initState() {
@@ -35,22 +51,38 @@ class _HomeScreenState extends State<HomeScreen> {
     _searchController.dispose();
     _scrollController.dispose();
     _debounceTimer?.cancel();
+    _scrollThrottleTimer?.cancel();
     super.dispose();
   }
 
-  void _loadInitialData() {
+  void _loadInitialData() async {
     setState(() {
       _isLoading = true;
     });
     
-    // Simulate API call delay
-    Future.delayed(const Duration(milliseconds: 500), () {
+    try {
+      final pokemonList = await PokemonService.fetchPokemonList(
+        offset: _currentOffset,
+        limit: _itemsPerPage,
+      );
+      
+      // Use batch loading for better performance
+      final detailedPokemon = await PokemonService.fetchPokemonBatch(pokemonList.results);
+      
       setState(() {
-        _allTeams = Team.getMockTeams();
-        _filteredTeams = List.from(_allTeams);
+        _allPokemon = detailedPokemon;
+        _filteredPokemon = List.from(_allPokemon);
+        _isLoading = false;
+        _currentOffset = _itemsPerPage;
+        _hasMore = pokemonList.next != null;
+      });
+      
+    } catch (e) {
+      setState(() {
         _isLoading = false;
       });
-    });
+      _showErrorSnackBar('Failed to load Pokemon: $e');
+    }
   }
 
   void _onSearchChanged(String query) {
@@ -60,64 +92,124 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  void _performSearch(String query) {
-    setState(() {
-      if (query.isEmpty) {
-        _filteredTeams = List.from(_allTeams);
-      } else {
-        _filteredTeams = _allTeams
-            .where((team) =>
-                team.name.toLowerCase().contains(query.toLowerCase()) ||
-                team.country.toLowerCase().contains(query.toLowerCase()))
-            .toList();
-      }
-      _currentPage = 1;
-      _hasMore = true;
-    });
-  }
+  void _performSearch(String query) async {
+    if (query.isEmpty) {
+      setState(() {
+        _filteredPokemon = List.from(_allPokemon);
+        _isSearching = false;
+        _hasMore = true;
+        _currentOffset = _allPokemon.length;
+      });
+      return;
+    }
 
-  void _onScroll() {
-    if (_scrollController.position.pixels >=
-        _scrollController.position.maxScrollExtent - 200) {
-      _loadMoreTeams();
+    setState(() {
+      _isSearching = true;
+      _isLoading = true;
+    });
+
+    try {
+      final searchResults = await PokemonService.searchPokemon(query);
+      setState(() {
+        _filteredPokemon = searchResults;
+        _isSearching = false;
+        _isLoading = false;
+        _hasMore = false; // No infinite scroll during search
+      });
+    } catch (e) {
+      setState(() {
+        _isSearching = false;
+        _isLoading = false;
+      });
+      _showErrorSnackBar('Search failed: $e');
     }
   }
 
-  void _loadMoreTeams() {
-    if (_isLoading || !_hasMore) return;
+  void _onScroll() {
+    if (_isSearching) return; // Don't load more during search
+    
+    // Throttle scroll events to improve performance
+    _scrollThrottleTimer?.cancel();
+    _scrollThrottleTimer = Timer(const Duration(milliseconds: 25), () {
+      final currentPosition = _scrollController.position.pixels;
+      // Calculate actual card height based on screen width and aspect ratio
+      final screenWidth = MediaQuery.of(context).size.width;
+      final cardHeight = (screenWidth - 16) / 1.2; // Account for padding and aspect ratio
+      final currentItemIndex = (currentPosition / cardHeight).floor();
+      
+      // Load more when user is 20 items away from the end of loaded data
+      if (currentItemIndex >= _allPokemon.length - 20 && _hasMore && !_isLoading) {
+        _loadMorePokemon();
+      }
+    });
+  }
+
+  void _loadMorePokemon() async {
+    if (_isLoading || !_hasMore || _isSearching) return;
 
     setState(() {
       _isLoading = true;
     });
 
-    // Simulate API call delay
-    Future.delayed(const Duration(milliseconds: 800), () {
-      setState(() {
-        // In a real app, this would fetch more data from API
-        // For now, we'll just simulate loading more teams
-        final startIndex = _currentPage * _itemsPerPage;
-        final endIndex = startIndex + _itemsPerPage;
+    try {
+      // Load multiple batches for better performance
+      final List<Pokemon> allNewPokemon = [];
+      
+      for (int i = 0; i < 3; i++) { // Load 3 batches at once (15 Pokemon total)
+        if (!_hasMore) break;
         
-        if (startIndex < _allTeams.length) {
-          final newTeams = _allTeams.sublist(
-            startIndex,
-            endIndex > _allTeams.length ? _allTeams.length : endIndex,
-          );
-          _filteredTeams.addAll(newTeams);
-          _currentPage++;
-        } else {
+        final pokemonList = await PokemonService.fetchPokemonList(
+          offset: _currentOffset + (i * _itemsPerPage),
+          limit: _itemsPerPage,
+        );
+        
+        if (pokemonList.results.isEmpty) {
           _hasMore = false;
+          break;
         }
+        
+        final newPokemon = await PokemonService.fetchPokemonBatch(pokemonList.results);
+        allNewPokemon.addAll(newPokemon);
+        
+        if (pokemonList.next == null) {
+          _hasMore = false;
+          break;
+        }
+      }
+      
+      setState(() {
+        _allPokemon.addAll(allNewPokemon);
+        _filteredPokemon = List.from(_allPokemon);
+        _currentOffset += allNewPokemon.length;
         _isLoading = false;
       });
-    });
+      
+      // Manage memory after adding new Pokemon
+      _manageMemory();
+      
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+      });
+      _showErrorSnackBar('Failed to load more Pokemon: $e');
+    }
   }
 
-  void _onTeamTap(Team team) {
+  void _onPokemonTap(Pokemon pokemon) {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => TeamDetailScreen(team: team),
+        builder: (context) => PokemonDetailScreen(pokemon: pokemon),
+      ),
+    );
+  }
+
+  void _showErrorSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+        duration: const Duration(seconds: 3),
       ),
     );
   }
@@ -125,18 +217,23 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.white,
       appBar: AppBar(
-        title: const Text('Football Teams'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        backgroundColor: Colors.grey[100],
+        elevation: 0,
+        toolbarHeight: 0, // Remove the default app bar height
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(60),
+          preferredSize: const Size.fromHeight(88),
           child: Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
             child: TextField(
               controller: _searchController,
               onChanged: _onSearchChanged,
               decoration: InputDecoration(
-                hintText: 'Search teams...',
+                hintText: 'Search Pokémon...',
+                hintStyle: const TextStyle(
+                  fontFamily: 'Courier',
+                ),
                 prefixIcon: const Icon(Icons.search),
                 suffixIcon: _searchController.text.isNotEmpty
                     ? IconButton(
@@ -149,6 +246,15 @@ class _HomeScreenState extends State<HomeScreen> {
                     : null,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Colors.black),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Colors.black),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Colors.black, width: 2),
                 ),
                 filled: true,
                 fillColor: Colors.white,
@@ -157,24 +263,29 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ),
-      body: _isLoading && _filteredTeams.isEmpty
-          ? const Center(child: CircularProgressIndicator())
-          : _filteredTeams.isEmpty
+      body: _isLoading && _filteredPokemon.isEmpty
+          ? const Center(
+              child: CircularProgressIndicator(
+                color: Colors.black,
+              ),
+            )
+          : _filteredPokemon.isEmpty
               ? const Center(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Icon(
-                        Icons.search_off,
+                        Icons.pets,
                         size: 64,
                         color: Colors.grey,
                       ),
                       SizedBox(height: 16),
                       Text(
-                        'No teams found',
+                        'No Pokémon found',
                         style: TextStyle(
                           fontSize: 18,
                           color: Colors.grey,
+                          fontFamily: 'Courier',
                         ),
                       ),
                     ],
@@ -189,22 +300,24 @@ class _HomeScreenState extends State<HomeScreen> {
                     padding: const EdgeInsets.all(8),
                     gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                       crossAxisCount: 1,
-                      childAspectRatio: 2.5,
+                      childAspectRatio: 1.2,
                       crossAxisSpacing: 8,
                       mainAxisSpacing: 8,
                     ),
-                    itemCount: _filteredTeams.length + (_isLoading ? 1 : 0),
+                    itemCount: _filteredPokemon.length + (_isLoading ? 1 : 0),
                     itemBuilder: (context, index) {
-                      if (index == _filteredTeams.length) {
+                      if (index == _filteredPokemon.length) {
                         return const Center(
-                          child: CircularProgressIndicator(),
+                          child: CircularProgressIndicator(
+                            color: Colors.black,
+                          ),
                         );
                       }
                       
-                      final team = _filteredTeams[index];
-                      return TeamCard(
-                        team: team,
-                        onTap: () => _onTeamTap(team),
+                      final pokemon = _filteredPokemon[index];
+                      return PokemonCard(
+                        pokemon: pokemon,
+                        onTap: () => _onPokemonTap(pokemon),
                       );
                     },
                   ),
